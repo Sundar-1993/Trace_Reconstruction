@@ -275,8 +275,293 @@ def proj_grad_asc(P_prior,Y,lambda_grad,delta,step_size = 0.1,tolerance = 1e-6,m
     X = decode_from_P(P) 
     return X
 
+@jit(nopython = True)
+def sim_anneal(P_prior,Y,lambda_forward,delta,step_size = 0.05,max_steps = 1000):
+    """
+    Function for simulated annealing.
+    
+    Parameters
+    ----------
+    - P_prior: N*A numpy array of starting probability distribution
+    - Y: numpy array of length M, the observation
+    - lambda_forward: algorithm to compute log Pr(Y_{1:j}|X_{1:i}) for all i,j
+    - delta: the deletion probability
+    - step_size: float
+    - max_steps: max number of steps
+    
+    Returns
+    -------
+    - X: estimate of the input obtained via simulated annealing
+    
+    """
+    
+    N = P_prior.shape[0]
+    A = P_prior.shape[1]
+    
+    P = P_prior * np.ones_like(P_prior)
+    
+    lambda_list = np.zeros(max_steps)
+    
+    curr_cost = lambda_forward(P, Y, delta)[-1,-1]
+    
+    for it in range(max_steps):
+        
+        frac = it / float(max_steps)
+        temp = max(0.01, min(1,1-frac))
+        
+        new_P = P + np.random.normal(0,step_size,(N,A)) # random step
+        new_P = simplex_proj_mat(new_P) # projection step
+        
+        new_cost = lambda_forward(new_P, Y, delta)[-1,-1]
+        
+        lambda_list[it] = new_cost
+        
+        if curr_cost < new_cost or np.exp((new_cost-curr_cost)/temp) > np.random.random():
+            curr_cost = new_cost
+            P = new_P
+    
+    X = decode_from_P(P)
+    return X
+
+@jit(nopython = True)
+def sim_anneal_with_restart(P_prior,Y,lambda_forward,delta,step_size = 0.05,max_steps = 100,num_restarts = 10):
+    """
+    Function for simulated annealing with restarts.
+    
+    Parameters
+    ----------
+    - P_prior: N*A numpy array of starting probability distribution
+    - Y: numpy array of length M, the observation
+    - lambda_forward: algorithm to compute log Pr(Y_{1:j}|X_{1:i}) for all i,j
+    - delta: the deletion probability
+    - step_size: float
+    - max_steps: number of steps per restart
+    - num_restarts: number of restarts (total num of iterations = steps*num_restarts)
+    
+    Returns
+    -------
+    - X: estimate of the input obtained via simulated annealing with restarts
+    
+    """
+    
+    N = P_prior.shape[0]
+    A = P_prior.shape[1]
+    
+    P = P_prior * np.ones_like(P_prior)
+    
+    lambda_list = np.zeros(max_steps)
+    
+    curr_cost = lambda_forward(P, Y, delta)[-1,-1]
+    
+    best_P = P
+    best_cost = curr_cost
+    
+    for r in range(num_restarts):
+        
+        P = best_P
+        curr_cost = best_cost
+        
+        for it in range(max_steps):
+        
+            frac = it / float(max_steps)
+            temp = max(0.01, min(1,1-frac))
+        
+            new_P = P + np.random.normal(0,step_size,(N,A)) # random step
+            new_P = simplex_proj_mat(new_P) # projection step
+        
+            new_cost = lambda_forward(new_P, Y, delta)[-1,-1]
+        
+            lambda_list[it] = new_cost
+        
+            if best_cost < new_cost:
+                best_cost = new_cost
+                best_P = new_P
+        
+            if curr_cost < new_cost or np.exp((new_cost-curr_cost)/temp) > np.random.random():
+                curr_cost = new_cost
+                P = new_P
+    
+    X = decode_from_P(best_P)
+    return X
+
+@jit(nopython = True)
+def genetic_algorithm(P_prior,Y,lambda_forward,delta,pop_size = 10,mut_prob = 0.2,max_iters = 1000,do_crossover=True):
+    """
+    Function for genetic algorithm.
+    
+    Parameters
+    ----------
+    - P_prior: N*A numpy array of starting probability distribution
+    - Y: numpy array of length M, the observation
+    - lambda_forward: algorithm to compute log Pr(Y_{1:j}|X_{1:i}) for all i,j
+    - delta: the deletion probability
+    - pop_size: size of population
+    - mut_prob: probability of mutation. 0 means no mutations.
+    - max_iters: max iterations
+    - do_crossover: whether to generate children using crossover
+    
+    Returns
+    -------
+    - X: estimate of the input obtained via genetic algorithm
+    
+    """
+    
+    N = P_prior.shape[0]
+    A = P_prior.shape[1]
+    
+    P = P_prior * np.ones_like(P_prior)
+    
+    population = []
+    
+    for it in range(pop_size):
+        
+        member = P + np.random.normal(0,0.5,(N,A))
+        member = simplex_proj_mat(member)
+        population.append(member)
+    
+    for it in range(max_iters):
+        
+        fitness = np.zeros(pop_size)
+        
+        best_fit1 = 0
+        best_fit2 = 0
+        best_idx1 = 0
+        best_idx2 = 0
+        
+        worst_fit1 = -1
+        worst_fit2 = -1
+        worst_idx1 = -1
+        worst_idx2 = -1
+        
+        for idx in range(pop_size):
+            
+            fit = lambda_forward(population[idx], Y, delta)[-1,-1]
+            fitness[idx] = fit
+            
+            
+            if worst_fit1 == -1:
+                worst_fit1 = fit
+                worst_idx1 = idx
+            
+            if worst_fit2 == -1:
+                worst_fit2 = fit
+                worst_idx2 = idx
+            
+            if fit > best_fit1:
+                best_fit2 = best_fit1
+                best_idx2 = best_idx1
+                best_fit1 = fit
+                best_idx1 = idx
+            elif fit > best_fit2:
+                best_fit2 = fit
+                best_idx2 = idx
+            elif fit < worst_fit1:
+                worst_fit2 = worst_fit1
+                worst_idx2 = worst_idx1
+                worst_fit1 = fit
+                worst_idx1 = idx
+            elif fit < worst_fit2:
+                worst_fit2 = fit
+                worst_idx2 = idx
+        
+        parent1 = population[best_idx1]
+        parent2 = population[best_idx2]
+        
+        if do_crossover:
+            crossover = np.random.randint(N)
+        else:
+            crossover = N
+            
+        child1 = np.concatenate((parent1[0:crossover,:],parent2[crossover:,:]),axis=0)
+        child2 = np.concatenate((parent2[0:crossover,:],parent1[crossover:,:]),axis=0)
+        
+        for sym in range(N):
+            if np.random.random() < mut_prob:
+                child1[sym,:] = child1[sym,::-1]
+            if np.random.random() < mut_prob:
+                child2[sym,:] = child2[sym,::-1]
+        
+        population[worst_idx1] = child1
+        population[worst_idx2] = child2
+     
+    best_fit = 0
+    best_idx = 0
+    
+    for idx in range(pop_size):
+            
+        fit = lambda_forward(population[idx], Y, delta)[-1,-1]
+        fitness[idx] = fit
+        
+        if fit > best_fit:
+            best_fit = fit
+            best_idx = idx
+    
+    X = decode_from_P(population[best_idx])
+    return X
+
+@jit(nopython = True)
+def beam_search(P_prior,Y,lambda_forward,delta,num_states=10,tolerance = 1e-6,max_steps=1000):
+    """
+    Function for beam search
+    
+    Parameters
+    ----------
+    - P_prior: N*A numpy array of starting probability distribution
+    - Y: numpy array of length M, the observation
+    - lambda_forward: algorithm to compute log Pr(Y_{1:j}|X_{1:i}) for all i,j
+    - delta: the deletion probability
+    - num_states: number of best states to keep at each step
+    - tolerance: float in [0,1]
+    - max_steps: max number of steps
+    
+    Returns
+    -------
+    - X: estimate of the input obtained via beam search
+    
+    """
+    
+    N = P_prior.shape[0]
+    A = P_prior.shape[1]
+    
+    states = []
+    
+    for i in range(num_states):
+        rand_state = randseq_non_uniform(N,1/A * np.ones(A)) # Change to P_prior?
+        states.append(rand_state)
+    
+    for it in range(max_steps):
+        
+        neighbors = []
+        for i in range(num_states):
+            neighbors.append(states[i])
+            for j in range(N):
+                neighbors.append(flip_bit_at_j(states[i],j))
+        
+        lambda_values = []
+        for i in range(len(neighbors)):
+            cat_X = make_categorical(neighbors[i],A)
+            lambda_values.append(lambda_forward(cat_X, Y, delta)[-1,-1])
+        
+        states.clear()
+        for i in range(num_states):
+            idx = np.argmax(np.array(lambda_values))
+            states.append(neighbors[idx])
+            lambda_values[idx] = 0
+    
+    return states[0]
+
 
 ############################# HELPER FUNCTIONS ###################################
+
+@jit(nopython = True)
+def flip_bit_at_j(X,j):
+    """
+    Given a sequence X, flip bit at j-th index
+    """
+    bit = np.arange(1,2)
+    if X[j]==0:
+        bit = np.arange(0,1)
+    return np.concatenate((X[0:j],bit,X[j+1:]))
 
 @jit(nopython = True)
 def decode_from_P(P):
