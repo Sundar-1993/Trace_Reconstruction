@@ -188,6 +188,39 @@ def make_vector(P):
     else:
         raise ValueError('Not a lattice point distribution')
 
+
+@jit(nopython = True)
+def edit_dist(A, B):
+    """
+    Given two vectors, compute edit distance (number of insertions, deletions, substitutions
+    to transform one vector into the other).
+    
+    Parameters
+    ----------
+    - A: numpy array of length N1
+    - B: numpy array of length N2
+    
+    Returns
+    -------
+    - edit distance between A and B divided by length of A
+    
+    """
+    N1 = A.shape[0]
+    N2 = B.shape[0]
+    array = np.zeros((N1+1,N2+1))
+    for i in range(0,N1):
+        array[i+1,0]=i+1
+    for j in range(0,N2):
+        array[0,j+1]=j+1
+    for i in range(0,N1):
+        for j in range(0,N2):
+            sub_cost = 1
+            if A[i] == B[j]:
+                sub_cost = 0
+            array[i+1,j+1]=min([array[i+1,j]+1,array[i,j+1]+1,array[i,j]+sub_cost])        
+    return array[N1,N2]/N1
+
+
 ####### NOT REALLY USING THE BELOW FUNCTIONS #######
 
 

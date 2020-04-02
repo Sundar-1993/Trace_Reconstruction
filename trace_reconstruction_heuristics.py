@@ -4,6 +4,9 @@ Trace reconstruction algorithms with multiple traces
 - iterative symbolwise MAP with multiple traces
 - projected gradient ascent
 - exact symbolwise map
+- independent sources combination
+- Bitwise majority alignment
+- Trace statistics reconstruction using LP
 
 Helper function for these also included at the end.
 
@@ -11,17 +14,18 @@ Helper function for these also included at the end.
 import random
 import numpy as np
 import math
+from scipy.optimize import linprog
+from scipy.special import comb
+from itertools import product
 
 from numba import jit,prange
 
 from helper_functions import *
 
-from itertools import product
-
 
 
 @jit(nopython = True)
-def symbolwise_map_seq(P_prior,Y_list,lambda_grad,delta):
+def symbolwise_map_seq(P_prior,Y_list,lambda_forward,lambda_grad, delta):
     """
     Function to compute iterative symbolwise MAP
     
@@ -30,6 +34,7 @@ def symbolwise_map_seq(P_prior,Y_list,lambda_grad,delta):
     - P_prior: N*A numpy array of prior probability distribution
     - Y_list: list of numpy arrays for the traces
     - lambda_grad: function to compute the log of gradient of lambda
+    - lambda_forward: function to compute the log likelihood matrix
     - delta: the deletion probability
     
     Returns
@@ -46,17 +51,8 @@ def symbolwise_map_seq(P_prior,Y_list,lambda_grad,delta):
     
         G = lambda_grad(P,Y,delta)
 
-        temp = np.zeros_like(G[0,:])     
-
-        for a in range(A):
-            if P[0,a] == 0:
-                temp[a] = -1e100
-            else:
-                temp[a] = G[0,a] + math.log(P[0,a])
-
-        lambda_val = max(temp) + math.log(np.exp(temp-max(temp)).sum())
+        lambda_val = lambda_forward(P,Y,delta)[-1,-1]
                                                 # compute the log lambda from gradient
-
 
         log_P_post = np.log(P+1e-100) + G - lambda_val  # formula for symbolwise MAP
         P = np.exp(log_P_post) 
@@ -65,6 +61,43 @@ def symbolwise_map_seq(P_prior,Y_list,lambda_grad,delta):
     
     return X
 
+
+@jit(nopython = True)
+def ind_sources_comb(P_prior,Y_list,lambda_forward,lambda_grad, delta):
+    """
+    Function to do independent combination of posteriors
+    
+    Parameters
+    ----------
+    - P_prior: N*A numpy array of prior probability distribution
+    - Y_list: list of numpy arrays for the traces
+    - lambda_grad: function to compute the log of gradient of lambda
+    - lambda_forward: function to compute the log likelihood matrix
+    - delta: the deletion probability
+    
+    Returns
+    -------
+    - X: estimate of input
+    
+    """
+    N = P_prior.shape[0]
+    A = P_prior.shape[1]
+    
+    P_post_sum = np.zeros_like(P_prior)
+    
+    for Y in Y_list:
+    
+        G = lambda_grad(P_prior,Y,delta)
+
+        lambda_val = lambda_forward(P_prior,Y,delta)[-1,-1]
+                                                # compute the log lambda from gradient
+
+        log_P_post = np.log(P_prior+1e-100) + G - lambda_val  # formula for symbolwise MAP
+        P_post_sum += np.exp(log_P_post) 
+    
+    X = decode_from_P(P_post_sum)
+    
+    return X
 
 
 @jit(nopython = True)
@@ -144,6 +177,115 @@ def symbolwise_map_exact(P,traces,delta):
     
     X_hat = decode_from_P(P_post)
     return X_hat
+
+
+
+@jit(nopython = True)
+def BMA(traces, N):
+    """
+    Bitwise majority alignment algo.
+    Function to compute majority vote reconstruction
+    
+    Parameters
+    ----------
+    - traces: list of observed traces (1D numpy arrays)
+    - N: length of reconstruction
+    
+    Returns
+    -------
+    - X: N-length majority vote reconstruction of input traces
+    
+    """
+    
+    X = np.zeros((N,),dtype=numba.int64)
+    padded_traces = pad_traces(traces, N)
+    M = padded_traces.shape[0]
+    
+    for i in range(N):
+        current_bits = np.zeros((M,),dtype=numba.int64)
+        for j in range(M):
+            current_bits[j] = padded_traces[j,0]
+        majority_bit = mode(current_bits)
+        X[i] = majority_bit
+        # Shift traces with majority bit, backfilling with 0.
+        for j in range(M):
+            if padded_traces[j,0]== majority_bit:
+                padded_traces[j,:-1] = padded_traces[j,1:]
+                padded_traces[j,N-1] = 0
+    return X
+
+
+
+def bitwise_stats(traces, N, delta):
+    """
+    Function to compute reconstruction using the bitwise trace statistics.
+    Reconstruction is done by solving a series of LPs.
+    
+    Parameters
+    ----------
+    - traces: list of 1D numpy arrays
+    - N: length of reconstruction
+    - delta: deletion probability
+    
+    Returns
+    -------
+    - X: N-length reconstruction of input traces
+    
+    """
+    
+    X = np.zeros((N,),dtype=int)
+    padded_traces = pad_traces(traces, N)
+    num_traces = padded_traces.shape[0]
+    
+    p = np.zeros(N)
+    for j in range(N):
+        p[j] = np.sum(padded_traces[:,j])/num_traces
+    
+    c = np.concatenate((np.ones(N,), np.zeros(N,)), axis=None)
+    bounds = (0,1)
+    
+    for i in range(N):
+        A_ub = np.zeros((2*N,2*N))
+        for j in range(N):
+            for k in range(N):
+                if j == k:
+                    A_ub[j,k] = -1
+                    A_ub[j+N,k] = -1
+                    A_ub[j,k+N] = alpha(j+1,k+1,delta)
+                    A_ub[j+N,k+N] = -1*A_ub[j,k+N]
+                elif k > j:
+                    A_ub[j,k+N] = alpha(j+1,k+1,delta)
+                    A_ub[j+N,k+N] = -1*A_ub[j,k+N]
+        
+        b_ub = np.concatenate((p,-1*p), axis=None)
+        
+        A_eq0 = np.zeros((i+1,2*N))
+        b_eq0 = np.zeros(i+1)
+        for j in range(i+1):
+            A_eq0[j,j+N] = 1
+            if j==i:
+                b_eq0[j] = 0
+            else:
+                b_eq0[j] = X[j]
+        
+        A_eq1 = np.zeros((i+1,2*N))
+        b_eq1 = np.zeros(i+1)
+        for j in range(i+1):
+            A_eq1[j,j+N] = 1
+            if j==i:
+                b_eq1[j] = 1
+            else:
+                b_eq1[j] = X[j]
+        
+        res0 = linprog(c,A_ub,b_ub,A_eq0,b_eq0,bounds,method='interior-point')
+        res1 = linprog(c,A_ub,b_ub,A_eq1,b_eq1,bounds,method='interior-point')
+        if res0.fun < res1.fun:
+            X[i] = 0
+        else:
+            X[i] = 1
+    
+    return X
+
 
 
 ############################# HELPER FUNCTIONS ###################################
@@ -615,4 +757,46 @@ def compute_posteriors(N,A,traces,delta,P,forward_vals,backward_vals):
     
     return posteriors
 
+########## Following 2 are helpers for BMA #############
 
+@jit(nopython = True)
+def mode(a):
+    b = np.ravel(a)
+    unique = np.unique(b)
+    count = 0
+    m = 0
+    for u in unique:
+        curr_count = 0
+        for bit in b:
+            if bit == u:
+                curr_count = curr_count+1
+        if curr_count > count:
+            count = curr_count
+            m = u
+    return m
+
+@jit(nopython= True)
+def pad_traces(traces, N):
+    num_traces = len(traces)
+    out = np.zeros((num_traces,N),dtype=numba.int64)
+    for j in range(num_traces):
+        trace = traces[j]
+        for i in range(len(trace)):
+            out[j,i] = trace[i]
+    return out
+
+
+######### FOllowing 2 helpers for reconstruction via LP #########
+
+
+# def pad_traces(traces, N):
+#     num_traces = len(traces)
+#     out = np.zeros((num_traces,N),dtype=int)
+#     for j in range(num_traces):
+#         trace = traces[j]
+#         for i in range(len(trace)):
+#             out[j,i] = trace[i]
+#     return out
+
+def alpha(j,k, delta):
+    return comb(k-1,j-1,exact=True)*(delta**(k-j))*((1-delta)**j)

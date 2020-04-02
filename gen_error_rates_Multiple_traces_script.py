@@ -24,6 +24,7 @@ sns.set_style('whitegrid')
 def one_iter(N,A,T_s,delta, method = None, method_params = None):
     
     X = randseq_uniform(N,A)
+#     print(X[-20:])
     Y_list = []
     
     hamming_error_rates = []
@@ -37,7 +38,10 @@ def one_iter(N,A,T_s,delta, method = None, method_params = None):
                                      lambda_forward,delta,step_size = 0.1,\
                                      tolerance = 1e-6,max_grad_steps = 100)
             elif method == 'symbolwise_map_seq':
-                Xhat = symbolwise_map_seq(method_params['P_init'],Y_list,lambda_grad,delta)
+                Xhat = symbolwise_map_seq(method_params['P_init'],Y_list,lambda_forward,lambda_grad,delta)
+            
+            elif method == 'ind_sources_comb':
+                Xhat = ind_sources_comb(method_params['P_init'],Y_list,lambda_forward,lambda_grad,delta)
                 
             elif method == 'symbolwise_map_exact':
                 Xhat = symbolwise_map_exact(method_params['P_init'],Y_list,delta)
@@ -56,6 +60,10 @@ warnings.filterwarnings('ignore')
 
 print('Warming up the numba functions....')
 
+##### Warming up numba and the functions #####
+import warnings
+warnings.filterwarnings('ignore')
+
 N = 10
 A = 2
 T_s = [1]
@@ -72,6 +80,11 @@ method_params['P_init'] = 1/A * np.ones((N,A))
 one_iter(N,A,T_s,delta, method, method_params)
 
 method = 'symbolwise_map_exact'
+method_params = {}
+method_params['P_init'] = 1/A * np.ones((N,A))
+one_iter(N,A,T_s,delta, method, method_params)
+
+method = 'ind_sources_comb'
 method_params = {}
 method_params['P_init'] = 1/A * np.ones((N,A))
 one_iter(N,A,T_s,delta, method, method_params)
@@ -117,12 +130,12 @@ A = 2
 T_s = [1,2,4,8,12,20]
 delta_vec = np.arange(0.1,0.6,0.1)
 
-hyperiters = 40
+hyperiters = 200
 process_per_hyperiter = 40
 
 errors = {}
 
-methods = ['symbolwise_map_seq','proj_grad_asc_traces']
+methods = ['symbolwise_map_seq','ind_sources_comb']
 
 for method in methods:
     print('*'*50,'\n',method,'\n','*'*50)
@@ -131,4 +144,4 @@ for method in methods:
     errors[method] = gen_error_rates(N,A,T_s,delta_vec, method, method_params,hyperiters,process_per_hyperiter)
 
 
-np.save('errors_BL{}.npy'.format(N),errors)
+np.save('errors_BL{}_moreiters.npy'.format(N),errors)
